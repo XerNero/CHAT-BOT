@@ -156,34 +156,96 @@ export default function ChatPage() {
     }
   };
 
-  // Render citation with highlighting
-  // Render citation with highlighting & Markdown bold
+  // Render Markdown-like text with citations, headings, lists, bold
   const renderTextWithCitations = (text: string) => {
     if (!text) return null;
 
-    // Split by citation pattern [#1]
-    const parts = text.split(/(\[#\d+\])/g);
+    // Split into lines for proper markdown rendering
+    const lines = text.split('\n');
+
+    const renderInlineContent = (content: string, keyPrefix: string) => {
+      // Handle citations [#N] and bold **text**
+      const parts = content.split(/(\[#\d+\]|\*\*.*?\*\*)/g);
+
+      return parts.map((part, i) => {
+        if (part.match(/^\[#\d+\]$/)) {
+          return (
+            <span key={`${keyPrefix}-${i}`} className="citation-badge">
+              {part}
+            </span>
+          );
+        }
+        if (part.startsWith('**') && part.endsWith('**')) {
+          return (
+            <strong key={`${keyPrefix}-${i}`} className="font-bold text-[var(--primary)]">
+              {part.slice(2, -2)}
+            </strong>
+          );
+        }
+        return <span key={`${keyPrefix}-${i}`}>{part}</span>;
+      });
+    };
 
     return (
-      <>
-        {parts.map((part, i) => {
-          if (part.match(/^\[#\d+\]$/)) {
+      <div className="markdown-content space-y-2">
+        {lines.map((line, lineIdx) => {
+          const trimmed = line.trim();
+
+          // Empty line = spacer
+          if (!trimmed) {
+            return <div key={lineIdx} className="h-2" />;
+          }
+
+          // Heading ### 
+          if (trimmed.startsWith('### ')) {
             return (
-              <span key={i} className="citation-badge">
-                {part}
-              </span>
+              <h3 key={lineIdx} className="text-lg font-bold text-[var(--primary)] mt-4 mb-2">
+                {renderInlineContent(trimmed.slice(4), `h3-${lineIdx}`)}
+              </h3>
             );
           }
-          // Markdown bold support **text**
-          const boldParts = part.split(/(\*\*.*?\*\*)/g);
-          return boldParts.map((bp, j) => {
-            if (bp.startsWith('**') && bp.endsWith('**')) {
-              return <strong key={`${i}-${j}`} className="font-bold text-[var(--primary)]">{bp.slice(2, -2)}</strong>;
-            }
-            return <span key={`${i}-${j}`}>{bp}</span>;
-          });
+
+          // Heading ##
+          if (trimmed.startsWith('## ')) {
+            return (
+              <h2 key={lineIdx} className="text-xl font-bold text-[var(--primary)] mt-4 mb-2">
+                {renderInlineContent(trimmed.slice(3), `h2-${lineIdx}`)}
+              </h2>
+            );
+          }
+
+          // Numbered list (1. 2. 3.)
+          const numberedMatch = trimmed.match(/^(\d+)\.\s+(.+)/);
+          if (numberedMatch) {
+            return (
+              <div key={lineIdx} className="flex gap-2 ml-2">
+                <span className="font-bold text-[var(--primary)] min-w-[1.5rem]">{numberedMatch[1]}.</span>
+                <span>{renderInlineContent(numberedMatch[2], `num-${lineIdx}`)}</span>
+              </div>
+            );
+          }
+
+          // Bullet point (- or * or •) with indentation support
+          const bulletMatch = trimmed.match(/^([\s]*)([-*•])\s+(.+)/);
+          if (bulletMatch || line.match(/^\s+[-*•]\s+/)) {
+            const indent = line.match(/^(\s*)/)?.[1]?.length || 0;
+            const content = trimmed.replace(/^[-*•]\s+/, '');
+            return (
+              <div key={lineIdx} className="flex gap-2" style={{ marginLeft: `${Math.min(indent, 6) * 0.5 + 1}rem` }}>
+                <span className="text-[var(--primary)]">•</span>
+                <span>{renderInlineContent(content, `bullet-${lineIdx}`)}</span>
+              </div>
+            );
+          }
+
+          // Regular paragraph
+          return (
+            <p key={lineIdx} className="leading-relaxed">
+              {renderInlineContent(trimmed, `p-${lineIdx}`)}
+            </p>
+          );
         })}
-      </>
+      </div>
     );
   };
 

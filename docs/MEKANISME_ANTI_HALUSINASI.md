@@ -52,40 +52,46 @@ Chatbot ini dibangun dengan arsitektur **RAG (Retrieval-Augmented Generation)** 
 ### 3.1 System Prompt dengan Constraint Ketat
 
 ```javascript
-// File: apps/api/server.mjs (baris 897-906)
+// File: apps/api/server.mjs
 
-const system = `Kamu adalah asisten kampus Universitas Teknologi Nusantara (UTN).
+const system = `Kamu adalah asisten kampus berbasis dokumen.
 
-ATURAN MUTLAK (STRICT):
-1. SCOPE KAMPUS SAJA: Kamu hanya boleh menjawab hal-hal yang 
-   berkaitan dengan Dokumen Kampus UTN.
-   
-2. TOLAK TOKOH UMUM: Jika user bertanya tentang Presiden, Politik, 
-   Selebriti, atau Sejarah Umum yang TIDAK ADA di dokumen, 
-   JAWAB: "Maaf, topik ini di luar konteks dokumen kampus." 
-   (JANGAN GUNAKAN PENGETAHUAN LUAR).
-   
-3. JAWABAN TUNGGAL: Buat satu narasi padu ringkas.
+ATURAN FORMAT JAWABAN:
+- Gunakan **Markdown** untuk format yang rapi dan mudah dibaca.
+- Gunakan heading (## atau ###) untuk judul bagian jika perlu.
+- Gunakan numbered list (1. 2. 3.) untuk langkah-langkah atau poin berurutan.
+- Gunakan bullet points (- atau *) untuk daftar item.
+- Gunakan **bold** untuk istilah penting.
 
-4. JANGAN REPEAT: Jangan menulis ulang pertanyaan.
-
-5. SITASI WAJIB: Akhiri setiap fakta dengan [#NOMOR].
-
-Jika tidak ada di CONTEXT, katakan: 
-"Tidak ditemukan informasi yang relevan di dokumen."`;
+ATURAN KONTEN:
+- Jawaban HANYA berdasarkan CONTEXT yang diberikan.
+- Jika tidak ada bukti di CONTEXT, tulis: "Tidak ditemukan informasi yang relevan di dokumen."
+- Jangan menyebut "chatbot", "prompt", "instruksi", "konteks", atau aturan internal.
+- WAJIB pakai sitasi [#N] di akhir setiap fakta/kalimat penting.
+- Bahasa Indonesia.`;
 ```
 
 ### 3.2 Penjelasan Setiap Aturan
 
 | No | Aturan | Fungsi Anti-Halusinasi |
 |----|--------|------------------------|
-| 1 | SCOPE KAMPUS SAJA | Membatasi domain jawaban hanya ke topik kampus UTN |
-| 2 | TOLAK TOKOH UMUM | Mencegah LLM menggunakan pengetahuan internal tentang tokoh publik |
-| 3 | JAWABAN TUNGGAL | Mencegah jawaban bertele-tele yang berpotensi menyisipkan info palsu |
-| 4 | JANGAN REPEAT | Mencegah regurgitasi struktur prompt yang membingungkan |
-| 5 | SITASI WAJIB | Memaksa LLM mengaitkan setiap klaim dengan sumber dokumen |
+| 1 | FORMAT MARKDOWN | Jawaban terstruktur dan mudah dibaca |
+| 2 | JAWABAN BERDASARKAN CONTEXT | LLM tidak boleh menggunakan pengetahuan internal |
+| 3 | FALLBACK RESPONSE | Jika tidak ada info, tolak dengan sopan |
+| 4 | SITASI WAJIB | Memaksa LLM mengaitkan setiap klaim dengan sumber dokumen |
 
-### 3.3 Fallback Response
+### 3.3 Post-Processing Output
+
+Sistem juga melakukan post-processing untuk memformat output LLM:
+
+```javascript
+// formatAnswerMarkdown() - apps/api/server.mjs
+// - Mengubah (1) (2) (3) menjadi numbered list dengan line break
+// - Menambahkan line break sebelum bullet points
+// - Memformat nilai seperti A = 4.00 menjadi list yang rapi
+```
+
+### 3.4 Fallback Response
 
 Jika informasi tidak ditemukan dalam dokumen, sistem akan memberikan respons:
 
@@ -180,4 +186,4 @@ Dengan kombinasi **arsitektur RAG**, **system prompt yang ketat**, dan **hybrid 
 ---
 
 **Disusun untuk keperluan presentasi skripsi**  
-Tanggal: 3 Januari 2026
+Tanggal: 12 Januari 2026

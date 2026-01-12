@@ -5,7 +5,7 @@ import multipart from "@fastify/multipart";
 import { createRequire } from "module";
 
 // =====================
-// FIX FINAL pdf-parse (Node v24 + ESM)
+// FIX pdf-parse (Node v24 + ESM)
 // =====================
 const require = createRequire(import.meta.url);
 const pdfParseMod = require("pdf-parse");
@@ -27,28 +27,40 @@ if (!pdfParse) {
 // =====================
 const app = Fastify({ logger: true });
 
-// CORS for frontend
-app.addHook('onRequest', async (request, reply) => {
-  reply.header('Access-Control-Allow-Origin', '*');
-  reply.header('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  reply.header('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+// =====================
+// CORS (manual, aman untuk preflight)
+// =====================
+app.addHook("onRequest", async (req, reply) => {
+  reply.header("Access-Control-Allow-Origin", "*");
+  reply.header("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS");
+  reply.header("Access-Control-Allow-Headers", "Content-Type, Authorization");
+  reply.header("Access-Control-Max-Age", "86400");
 
-  if (request.method === 'OPTIONS') {
-    reply.status(204).send();
+  if (req.method === "OPTIONS") {
+    // Preflight
+    reply.code(204).send();
+    return reply; // penting agar handler lain tidak lanjut
   }
 });
 
+// multipart upload (Fastify v5)
 await app.register(multipart, {
   limits: { fileSize: 25 * 1024 * 1024 }, // 25MB
 });
 
+// =====================
+// Windows host (penting untuk WSL/Ubuntu)
+// Default: 172.17.112.1 (sering jadi gateway WSL)
+// =====================
+const WIN_HOST = process.env.WIN_HOST || "172.17.112.1";
+
 // services
 const qdrant = new QdrantClient({
-  url: "http://127.0.0.1:6333",
+  url: `http://${WIN_HOST}:6333`,
   checkCompatibility: false,
 });
 
-const OLLAMA_URL = "http://127.0.0.1:11434";
+const OLLAMA_URL = `http://${WIN_HOST}:11434`;
 
 // config
 const COLLECTION_NAME = "pdf_chunks";
@@ -58,30 +70,96 @@ const EMBED_MODEL = "llama3:8b";
 // =====================
 // Helpers (chunking & embeddings)
 // =====================
-function chunkText(text, maxChars = 1200, overlap = 200) {
-  const cleaned = text
+
+/**
+ * Smart Chunking - Memotong teks dengan mempertimbangkan:
+ * 1. Batas paragraf (prioritas tertinggi)
+ * 2. Batas kalimat (titik, tanda seru, tanda tanya)
+ * 3. Heading seperti BAB, Pasal, Bagian (sebagai pemisah alami)
+ * 4. Overlap untuk konteks antar chunk
+ */
+function chunkText(text, maxChars = 800, overlap = 150) {
+  // Bersihkan teks
+  const cleaned = String(text || "")
     .replace(/\r/g, "")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{3,}/g, "\n\n")
     .trim();
 
+  if (!cleaned) return [];
+
+  // Split berdasarkan paragraf (double newline)
+  const paragraphs = cleaned.split(/\n\n+/);
+
   const chunks = [];
-  let i = 0;
-  while (i < cleaned.length) {
-    const end = Math.min(i + maxChars, cleaned.length);
-    const slice = cleaned.slice(i, end).trim();
-    if (slice) chunks.push(slice);
-    if (end === cleaned.length) break;
-    i = Math.max(0, end - overlap);
+  let currentChunk = "";
+
+  for (const para of paragraphs) {
+    const trimmedPara = para.trim();
+    if (!trimmedPara) continue;
+
+    // Cek apakah paragraf ini adalah heading baru (BAB, Pasal, dll)
+    const isNewSection = /^(BAB|BAGIAN|PASAL|ARTIKEL|PERATURAN|KETENTUAN|\d+\.\s|\d+\)|\([a-z]\))/i.test(trimmedPara);
+
+    // Jika heading baru dan currentChunk tidak kosong, simpan chunk sebelumnya
+    if (isNewSection && currentChunk.trim()) {
+      chunks.push(currentChunk.trim());
+      currentChunk = "";
+    }
+
+    // Jika menambahkan paragraf ini melebihi maxChars
+    if (currentChunk.length + trimmedPara.length + 2 > maxChars) {
+      // Jika currentChunk sudah ada isinya, simpan dulu
+      if (currentChunk.trim()) {
+        chunks.push(currentChunk.trim());
+
+        // Ambil overlap dari akhir chunk sebelumnya
+        const sentences = currentChunk.split(/(?<=[.!?])\s+/);
+        const overlapText = sentences.slice(-2).join(" "); // 2 kalimat terakhir
+        currentChunk = overlapText.length < overlap * 2 ? overlapText + "\n\n" : "";
+      }
+
+      // Jika paragraf tunggal terlalu panjang, pecah berdasarkan kalimat
+      if (trimmedPara.length > maxChars) {
+        const sentences = trimmedPara.split(/(?<=[.!?])\s+/);
+        let sentenceChunk = currentChunk;
+
+        for (const sentence of sentences) {
+          if (sentenceChunk.length + sentence.length + 1 > maxChars) {
+            if (sentenceChunk.trim()) {
+              chunks.push(sentenceChunk.trim());
+            }
+            // Overlap: ambil kalimat terakhir
+            const lastSentences = sentenceChunk.split(/(?<=[.!?])\s+/).slice(-1);
+            sentenceChunk = lastSentences.join(" ") + " " + sentence;
+          } else {
+            sentenceChunk += (sentenceChunk ? " " : "") + sentence;
+          }
+        }
+        currentChunk = sentenceChunk;
+      } else {
+        currentChunk += trimmedPara;
+      }
+    } else {
+      // Tambahkan paragraf ke chunk saat ini
+      currentChunk += (currentChunk ? "\n\n" : "") + trimmedPara;
+    }
   }
-  return chunks;
+
+  // Jangan lupa chunk terakhir
+  if (currentChunk.trim()) {
+    chunks.push(currentChunk.trim());
+  }
+
+  // Filter chunk yang terlalu pendek (kurang dari 50 karakter)
+  return chunks.filter(c => c.length >= 50);
 }
 
 async function embedWithOllama(text) {
   const { body, statusCode } = await request(`${OLLAMA_URL}/api/embeddings`, {
     method: "POST",
     headers: { "content-type": "application/json" },
-    body: JSON.stringify({ model: EMBED_MODEL, prompt: text }),
+    body: JSON.stringify({ model: EMBED_MODEL, prompt: String(text || "") }),
   });
 
   if (statusCode < 200 || statusCode >= 300) {
@@ -117,7 +195,7 @@ function nowMs() {
 }
 
 function normalizeText(s) {
-  return (s || "")
+  return String(s || "")
     .toLowerCase()
     .replace(/[^\p{L}\p{N}\s]/gu, " ")
     .replace(/\s+/g, " ")
@@ -131,9 +209,38 @@ function tokenize(s) {
 }
 
 const STOPWORDS_ID = new Set([
-  "yang", "dan", "atau", "di", "ke", "dari", "pada", "untuk", "dengan", "adalah", "itu", "ini",
-  "dalam", "sebagai", "oleh", "agar", "bagi", "setiap", "akan", "dapat", "tidak", "harus",
-  "kami", "kamu", "anda", "para", "jika", "maka", "saat", "ketika", "lebih", "kurang",
+  "yang",
+  "dan",
+  "atau",
+  "di",
+  "ke",
+  "dari",
+  "pada",
+  "untuk",
+  "dengan",
+  "adalah",
+  "itu",
+  "ini",
+  "dalam",
+  "sebagai",
+  "oleh",
+  "agar",
+  "bagi",
+  "setiap",
+  "akan",
+  "dapat",
+  "tidak",
+  "harus",
+  "kami",
+  "kamu",
+  "anda",
+  "para",
+  "jika",
+  "maka",
+  "saat",
+  "ketika",
+  "lebih",
+  "kurang",
 ]);
 
 function filterStopwords(tokens) {
@@ -155,7 +262,6 @@ function bm25Score(queryTokens, docTokens, dfMap, avgdl, k1 = 1.2, b = 0.75) {
 
     const df = dfMap.get(q) || 0;
     const idf = Math.log(1 + ((keywordCache.points.length - df + 0.5) / (df + 0.5)));
-
     const denom = f + k1 * (1 - b + b * (dl / (avgdl || 1)));
     score += idf * ((f * (k1 + 1)) / (denom || 1));
   }
@@ -210,11 +316,126 @@ function rrfFuse(rankA, rankB, k = 60) {
 }
 
 // =====================
-// Hybrid Retrieval Helper (reusable untuk multi-hop)
+// Output parsing + quality gate
+// =====================
+function safeJsonParse(str) {
+  const s = String(str || "").trim();
+  try {
+    return JSON.parse(s);
+  } catch { }
+
+  const first = s.indexOf("{");
+  const last = s.lastIndexOf("}");
+  if (first !== -1 && last !== -1 && last > first) {
+    const cut = s.slice(first, last + 1);
+    try {
+      return JSON.parse(cut);
+    } catch { }
+  }
+  return null;
+}
+
+function hasCitations(text) {
+  const t = String(text || "");
+  return /\[#\d+\]/.test(t);
+}
+
+function isNotFoundText(s) {
+  return /tidak ditemukan/i.test(String(s || ""));
+}
+
+// buang meta kalimat yg sering bocor
+function stripMetaRules(s) {
+  let t = String(s || "").trim();
+  if (!t) return "";
+
+  const metaPatterns = [
+    /jawaban chatbot/i,
+    /chatbot/i,
+    /context/i,
+    /konteks/i,
+    /instruksi/i,
+    /aturan/i,
+    /prompt/i,
+    /kami sarankan/i,
+    /cari sumber lain/i,
+    /sumber lain/i,
+    /dapat disimpulkan/i,
+    /inferensi/i,
+  ];
+
+  const parts = t.split(/(?<=[.!?])\s+/);
+  const kept = parts.filter((sent) => {
+    const x = sent.trim();
+    if (!x) return false;
+    for (const p of metaPatterns) {
+      if (p.test(x)) return false;
+    }
+    return true;
+  });
+
+  t = kept.join(" ").trim();
+  if (/^(jawaban|aturan)\b/i.test(t) && t.length < 15) return "";
+  return t;
+}
+
+// fallback sitasi: kalau LLM bandel
+function ensureCitationsInText(text, defaultRef = "[#1]") {
+  const s = String(text || "").trim();
+  if (!s) return s;
+  if (hasCitations(s)) return s;
+
+  return s
+    .split(/(?<=[.!?])\s+/)
+    .map((sent) => {
+      const st = sent.trim();
+      if (!st) return st;
+      if (isNotFoundText(st)) return st;
+      return `${st} ${defaultRef}`;
+    })
+    .join(" ");
+}
+
+/**
+ * Post-process LLM output untuk memformat Markdown dengan benar
+ * - Menambahkan line break sebelum numbered list (1. 2. 3.)
+ * - Menambahkan line break sebelum bullet points (- atau *)
+ * - Memformat nilai/bobot dalam list yang rapi
+ */
+function formatAnswerMarkdown(text) {
+  if (!text) return text;
+
+  let formatted = text
+    // Tambahkan line break sebelum numbered list (1) atau 1.
+    .replace(/\s*\((\d+)\)\s*/g, '\n\n$1. ')
+    .replace(/(?<!\n)\s*(\d+)\.\s+/g, '\n\n$1. ')
+    // Tambahkan line break sebelum bullet points
+    .replace(/(?<!\n)\s*[-•]\s+/g, '\n- ')
+    // Format nilai (A = 4.00, B = 3.00) jadi list
+    .replace(/([A-E][+-]?)\s*=\s*([\d.]+)\s*\(([^)]+)\)/g, '\n- **$1** = $2 ($3)')
+    // Bersihkan multiple newlines
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+
+  return formatted;
+}
+
+function finalizeAnswer(answerText) {
+  let out = stripMetaRules(String(answerText || ""));
+  if (!out) return "Tidak ditemukan informasi yang relevan di dokumen.";
+
+  // Format Markdown
+  out = formatAnswerMarkdown(out);
+
+  return out;
+}
+
+// =====================
+// Hybrid Retrieval Helper (reusable)
 // =====================
 async function hybridRetrieve(queryText, topK = 6) {
-  // Vector search
   const qVec = await embedWithOllama(queryText);
+
   const vectorHits = await qdrant.search(COLLECTION_NAME, {
     vector: qVec,
     limit: topK * 2,
@@ -227,7 +448,6 @@ async function hybridRetrieve(queryText, topK = 6) {
     vectorRank.set(String(vectorHits[i].id), i + 1);
   }
 
-  // BM25 search
   const qToks = filterStopwords(tokenize(queryText));
   const { df, avgdl } = buildDfMapAndAvgdl(keywordCache.points);
 
@@ -241,15 +461,11 @@ async function hybridRetrieve(queryText, topK = 6) {
     .slice(0, topK * 2);
 
   const keywordRank = new Map();
-  for (let i = 0; i < bm25Scored.length; i++) {
-    keywordRank.set(bm25Scored[i].id, i + 1);
-  }
+  for (let i = 0; i < bm25Scored.length; i++) keywordRank.set(bm25Scored[i].id, i + 1);
 
-  // RRF Fusion
   const fused = rrfFuse(vectorRank, keywordRank, 60);
   const fusedSorted = Array.from(fused.entries()).sort((a, b) => b[1] - a[1]).slice(0, topK);
 
-  // Build payload map
   const idToPayload = new Map();
   for (const hit of vectorHits || []) idToPayload.set(String(hit.id), hit.payload);
   for (const hit of bm25Scored) idToPayload.set(String(hit.id), hit.payload);
@@ -270,21 +486,20 @@ async function hybridRetrieve(queryText, topK = 6) {
 }
 
 // =====================
-// Query Decomposition untuk Multi-hop
+// Query Decomposition (Multi-hop)
 // =====================
 async function decomposeQuery(question) {
   const decomposePrompt = `Kamu adalah sistem pemecah pertanyaan untuk pencarian dokumen.
-Tugasmu: ubah pertanyaan pengguna menjadi 4 sub-pertanyaan pencarian:
+Ubah pertanyaan pengguna menjadi 4 sub-pertanyaan pencarian:
 1) overview/definisi
 2) detail/poin utama/langkah
 3) batasan/syarat/pengecualian (aturan)
-4) closure/kesimpulan/tindak lanjut (penutup)
+4) closure/tindak lanjut (penutup)
 
 ATURAN:
 - Output HARUS JSON valid dengan kunci: "overview","detail","aturan","penutup"
 - Tiap nilai adalah 1 kalimat tanya, bahasa Indonesia
 - Jangan menambahkan fakta di luar pertanyaan pengguna
-- Tetap fokus pada topik yang ditanyakan
 
 Pertanyaan pengguna:
 ${question}`;
@@ -301,223 +516,52 @@ ${question}`;
       }),
     });
 
-    if (statusCode < 200 || statusCode >= 300) {
-      return null;
+    if (statusCode >= 200 && statusCode < 300) {
+      const json = await body.json();
+      const content = json?.message?.content || "";
+      const parsed = safeJsonParse(content);
+      if (parsed && parsed.overview && parsed.detail && parsed.aturan && parsed.penutup) {
+        return {
+          overview: String(parsed.overview).trim(),
+          detail: String(parsed.detail).trim(),
+          aturan: String(parsed.aturan).trim(),
+          penutup: String(parsed.penutup).trim(),
+        };
+      }
     }
-
-    const json = await body.json();
-    const content = json?.message?.content || "";
-    const parsed = safeJsonParse(content);
-
-    if (parsed && parsed.overview && parsed.detail) {
-      return {
-        overview: String(parsed.overview || question).trim(),
-        detail: String(parsed.detail || question).trim(),
-        aturan: String(parsed.aturan || `Apa syarat atau batasan terkait ${question}?`).trim(),
-        penutup: String(parsed.penutup || `Apa kesimpulan atau tindak lanjut terkait ${question}?`).trim(),
-      };
-    }
-  } catch (err) {
-    console.error("Decompose error:", err);
+  } catch {
+    // ignore
   }
 
-  // Fallback: gunakan pertanyaan asli dengan variasi
+  // fallback
   return {
-    overview: `Apa definisi dan konteks umum tentang: ${question}`,
-    detail: `Apa langkah-langkah atau poin utama terkait: ${question}`,
-    aturan: `Apa syarat, batasan, atau pengecualian terkait: ${question}`,
-    penutup: `Apa kesimpulan atau tindak lanjut yang disarankan terkait: ${question}`,
+    overview: `Apa definisi dan konteks umum tentang: ${question}?`,
+    detail: `Apa langkah-langkah atau poin utama terkait: ${question}?`,
+    aturan: `Apa syarat, batasan, atau pengecualian terkait: ${question}?`,
+    penutup: `Apa kesimpulan atau tindak lanjut terkait: ${question}?`,
   };
 }
 
 // =====================
-// Output parsing + quality gate
+// OLLAMA helper
 // =====================
-function safeJsonParse(str) {
-  const s = String(str || "").trim();
-
-  try {
-    return JSON.parse(s);
-  } catch { }
-
-  const first = s.indexOf("{");
-  const last = s.lastIndexOf("}");
-  if (first !== -1 && last !== -1 && last > first) {
-    const cut = s.slice(first, last + 1);
-    try {
-      return JSON.parse(cut);
-    } catch { }
-  }
-
-  return null;
-}
-
-function parseFourParts(rawText) {
-  const raw = String(rawText || "").trim();
-
-  const j = safeJsonParse(raw);
-  if (j && typeof j === "object") {
-    return {
-      overview: String(j.overview || "").trim(),
-      detail: String(j.detail || "").trim(),
-      aturan: String(j.aturan || "").trim(),
-      penutup: String(j.penutup || "").trim(),
-    };
-  }
-
-  // fallback minimal jika JSON gagal total
-  return {
-    overview: "",
-    detail: raw,
-    aturan: "",
-    penutup: "",
-  };
-}
-
-function hasCitations(text) {
-  // kita tetap prefer [#1], tapi toleran:
-  const t = String(text || "");
-  return /\[#\d+\]/.test(t) || /\[\d+\]/.test(t) || /#\d+/.test(t);
-}
-
-function isFourPartsFilled(a) {
-  const o = String(a?.overview || "").trim();
-  const d = String(a?.detail || "").trim();
-  const r = String(a?.aturan || "").trim();
-  const p = String(a?.penutup || "").trim();
-  return o.length > 0 && d.length > 0 && r.length > 0 && p.length > 0;
-}
-
-function isNotFoundText(s) {
-  return /tidak ditemukan di dokumen/i.test(String(s || ""));
-}
-
-function isNotFoundAnswer(a) {
-  const all = `${a?.overview || ""} ${a?.detail || ""} ${a?.aturan || ""} ${a?.penutup || ""}`;
-  return isNotFoundText(all);
-}
-
-// bersihkan meta-rule/policy yg sering bocor + inferensi + saran
-function stripMetaRules(s) {
-  let t = String(s || "").trim();
-  if (!t) return "";
-
-  // hapus kalimat meta, saran, inferensi
-  const metaPatterns = [
-    /jawaban/i,
-    /chatbot/i,
-    /context/i,
-    /konteks/i,
-    /policy/i,
-    /instruksi/i,
-    /aturan keras/i,
-    /sistem/i,
-    /prompt/i,
-    /kami sarankan/i,
-    /cari sumber lain/i,
-    /sumber lain/i,
-    /dapat disimpulkan/i,
-    /kesimpulan/i,
-    /inferensi/i,
-    /berdasarkan isi dokumen/i,
-    /dokumen ini hanya berisi/i,
-    /teks yang berulang/i,
-    /tidak memberikan informasi/i,
-    /lebih relevan dan akurat/i,
-  ];
-
-  // split per kalimat, buang yang meta
-  const parts = t.split(/(?<=[.!?])\s+/);
-  const kept = parts.filter((sent) => {
-    const x = sent.trim();
-    if (!x) return false;
-    // buang kalau match salah satu pattern
-    for (const p of metaPatterns) {
-      if (p.test(x)) return false;
-    }
-    return true;
+async function ollamaChat(messagesArg, temperature = 0.2) {
+  const { body: chatBody, statusCode } = await request(`${OLLAMA_URL}/api/chat`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({
+      model: CHAT_MODEL,
+      messages: messagesArg,
+      stream: false,
+      options: { temperature },
+    }),
   });
 
-  t = kept.join(" ").trim();
-
-  // kalau jadi sangat pendek / cuma "Jawaban"
-  if (/^(jawaban|aturan)\b/i.test(t) && t.length < 15) return "";
-  return t;
-}
-
-// Deteksi klaim yang mengandung angka WAKTU spesifik tanpa sitasi (likely hallucination)
-// Hanya block angka waktu karena itu paling sering halusinasi
-function containsUnverifiedClaim(text) {
-  const t = String(text || "").trim();
-  if (!t) return false;
-  if (hasCitations(t)) return false; // sudah ada sitasi, OK
-  if (isNotFoundText(t)) return false; // not found, OK
-
-  // HANYA cek angka waktu spesifik (paling sering halusinasi)
-  // Contoh: "14 hari", "2 minggu", "30 hari sebelum deadline"
-  if (/\d+\s*(hari|minggu|bulan|tahun|jam)\s*(sebelum|setelah|kerja)?/i.test(t)) return true;
-
-  return false;
-}
-
-function looksBrokenSentence(s) {
-  const t = String(s || "").trim();
-  if (!t) return true;
-
-  // menggantung di akhir
-  if (/(maka|yaitu|sehingga|karena|bahwa)\s*(\[#\d+\]|\[\d+\]|#\d+)?\s*$/i.test(t)) return true;
-
-  // hanya sitasi doang
-  if (/^(\s*(\[#\d+\]|\[\d+\]|#\d+)\s*)+$/i.test(t)) return true;
-
-  // terlalu pendek tidak informatif
-  if (t.length < 8) return true;
-
-  return false;
-}
-
-// fallback citations: hanya dipakai kalau LLM benar-benar bandel
-function ensureCitationsInText(text, defaultRef = "[#1]") {
-  const s = String(text || "").trim();
-  if (!s) return s;
-  if (hasCitations(s)) return s;
-
-  return s
-    .split(/(?<=[.!?])\s+/)
-    .map((sent) => {
-      const st = sent.trim();
-      if (!st) return st;
-      if (isNotFoundText(st)) return st;
-      return `${st} ${defaultRef}`;
-    })
-    .join(" ");
-}
-
-function finalizeAnswer(answerText) {
-  let out = stripMetaRules(String(answerText || ""));
-
-  // Jika ada klaim tanpa sitasi (angka spesifik, nama layanan), dan tidak ada sitasi di seluruh teks
-  if (containsUnverifiedClaim(out) && !hasCitations(out)) {
-    // Force tambahkan warning atau masked, tapi untuk unverified claim kita bisa biarkan lolos dengan caution jika dia panjang
-    // Atau kita bisa reject. Untuk sekarang, kita coba sanitize sebisa mungkin.
-    // Kalau benar-benar severe, kita replace dengan pesan error
-    // Tapi karena user minta 'mengalir', kita percaya guardrail LLM prompt dulu.
-    // containsUnverifiedClaim hanya cek angka waktu "14 hari" tanpa sitasi.
-    // Kita bisa append disclaimer.
-    out += "\n\n(Catatan: Beberapa klaim angka spesifik mungkin perlu verifikasi manual jika tidak disertai sitasi).";
+  if (statusCode < 200 || statusCode >= 300) {
+    const errText = await chatBody.text();
+    throw new Error(`Ollama chat failed: ${statusCode} ${errText}`);
   }
-
-  if (!out) {
-    return "Maaf, tidak ditemukan informasi yang relevan dalam dokumen.";
-  }
-
-  // Ensure citations in text?
-  // ensureCitationsInText logic is tough on paragraphs. 
-  // Let's assume prompt works better now.
-  // We can force append citations if totally missing but documents were found? 
-  // Nanti di route handler kita cek.
-
-  return out;
+  return chatBody.json();
 }
 
 // =====================
@@ -532,6 +576,7 @@ app.get("/health", async () => {
 
   return {
     ok: true,
+    win_host: WIN_HOST,
     qdrant: { ok: true, collections_count: collections.collections?.length ?? 0 },
     ollama: { ok: true, models: (tags.models ?? []).map((m) => m.name) },
   };
@@ -539,45 +584,43 @@ app.get("/health", async () => {
 
 /**
  * GET /docs
- * List all ingested documents with chunk counts
+ * List all ingested documents with chunk counts (paginated scroll)
  */
 app.get("/docs", async (req, reply) => {
   try {
-    // Get all points to analyze source files
-    const scroll = await qdrant.scroll(COLLECTION_NAME, {
-      limit: 10000,
-      with_payload: true,
-      with_vector: false,
-    });
-
-    const points = scroll.points || [];
-
-    // Group by source_file
     const docMap = new Map();
-    for (const p of points) {
-      const sourceFile = p.payload?.source_file || "unknown";
-      if (!docMap.has(sourceFile)) {
-        docMap.set(sourceFile, {
-          source_file: sourceFile,
-          chunks: 0,
-          chunk_ids: [],
-        });
+    let offset = undefined;
+    let total = 0;
+
+    while (true) {
+      const res = await qdrant.scroll(COLLECTION_NAME, {
+        limit: 512,
+        with_payload: true,
+        with_vector: false,
+        offset,
+      });
+
+      const points = res.points || [];
+      for (const p of points) {
+        total++;
+        const sf = p.payload?.source_file || "unknown";
+        docMap.set(sf, (docMap.get(sf) || 0) + 1);
       }
-      const doc = docMap.get(sourceFile);
-      doc.chunks++;
-      doc.chunk_ids.push(p.id);
+
+      if (!res.next_page_offset) break;
+      offset = res.next_page_offset;
     }
 
-    const docs = Array.from(docMap.values()).map((d, idx) => ({
+    const docs = Array.from(docMap.entries()).map(([source_file, chunks], idx) => ({
       id: `doc-${idx + 1}`,
-      source_file: d.source_file,
-      chunks: d.chunks,
+      source_file,
+      chunks,
     }));
 
     return reply.send({
       ok: true,
       total_docs: docs.length,
-      total_chunks: points.length,
+      total_chunks: total,
       docs,
     });
   } catch (err) {
@@ -606,7 +649,6 @@ app.post("/ingest", async (req, reply) => {
     }
 
     const buf = await data.toBuffer();
-
     const maxChars = Number(req.query?.maxChars ?? 1200);
     const overlap = Number(req.query?.overlap ?? 200);
 
@@ -662,6 +704,11 @@ app.post("/ingest", async (req, reply) => {
   }
 });
 
+/**
+ * POST /chat
+ * Body: { question: string, history?: [{role, content}] }
+ * Output: { ok, answer: string, sources: [...] }
+ */
 app.post("/chat", async (req, reply) => {
   try {
     const body = req.body || {};
@@ -669,108 +716,55 @@ app.post("/chat", async (req, reply) => {
     const history = Array.isArray(body.history) ? body.history : [];
 
     if (!question) return reply.code(400).send({ ok: false, message: "question is required" });
-
     if (!keywordCache.points.length) await loadKeywordCache();
 
-    // 1) VECTOR
-    const qVec = await embedWithOllama(question);
-    const vectorHits = await qdrant.search(COLLECTION_NAME, {
-      vector: qVec,
-      limit: 20,
-      with_payload: true,
-      with_vector: false,
-    });
+    const contextChunks = await hybridRetrieve(question, 8);
 
-    const vectorRank = new Map();
-    for (let i = 0; i < (vectorHits || []).length; i++) vectorRank.set(String(vectorHits[i].id), i + 1);
-
-    // 2) KEYWORD
-    const qToks = filterStopwords(tokenize(question));
-    const { df, avgdl } = buildDfMapAndAvgdl(keywordCache.points);
-
-    const bm25Scored = keywordCache.points
-      .map((p) => {
-        const docToks = filterStopwords(tokenize(p.payload.text));
-        return { id: String(p.id), score: bm25Score(qToks, docToks, df, avgdl), payload: p.payload };
-      })
-      .filter((x) => x.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .slice(0, 20);
-
-    const keywordRank = new Map();
-    for (let i = 0; i < bm25Scored.length; i++) keywordRank.set(bm25Scored[i].id, i + 1);
-
-    // 3) FUSION
-    const fused = rrfFuse(vectorRank, keywordRank, 60);
-    const fusedSorted = Array.from(fused.entries()).sort((a, b) => b[1] - a[1]).slice(0, 8);
-
-    const idToPayload = new Map();
-    for (const hit of vectorHits || []) idToPayload.set(String(hit.id), hit.payload);
-    for (const hit of bm25Scored) idToPayload.set(String(hit.id), hit.payload);
-
-    const contextChunks = fusedSorted
-      .map(([id, score]) => {
-        const payload = idToPayload.get(id);
-        if (!payload?.text) return null;
-        return {
-          id,
-          score,
-          source_file: payload.source_file,
-          chunk_index: payload.chunk_index,
-          text: payload.text,
-        };
-      })
-      .filter(Boolean);
-
-    if (contextChunks.length === 0) {
+    if (!contextChunks.length) {
       return reply.send({
         ok: true,
-        answer: {
-          overview: "Tidak ditemukan di dokumen.",
-          detail: "Tidak ditemukan di dokumen.",
-          aturan: "Tidak ditemukan di dokumen.",
-          penutup: "Tidak ditemukan di dokumen.",
-        },
+        answer: "Tidak ditemukan informasi yang relevan di dokumen.",
         sources: [],
       });
     }
 
-    // CONTEXT: sitasi singkat
     const contextText = contextChunks.map((c, idx) => `[#${idx + 1}]\n${c.text}`).join("\n\n---\n\n");
 
     const system = `Kamu adalah asisten kampus berbasis dokumen.
 
-ATURAN MUTLAK (STRICT):
-1. SCOPE KAMPUS SAJA: Kamu hanya boleh menjawab hal-hal yang berkaitan dengan Dokumen Kampus UTN.
-2. TOLAK TOKOH UMUM: Jika user bertanya tentang Presiden, Politik, Selebriti, atau Sejarah Umum yang TIDAK ADA di dokumen, JAWAB: "Maaf, topik ini di luar konteks dokumen kampus." (JANGAN GUNAKAN PENGETAHUAN LUAR).
-3. JAWABAN TUNGGAL: Buat satu narasi padu ringkas.
-4. JANGAN REPEAT: Jangan menulis ulang pertanyaan.
-5. SITASI WAJIB: Akhiri setiap fakta dengan [#NOMOR].
+ATURAN FORMAT JAWABAN:
+- Gunakan **Markdown** untuk format yang rapi dan mudah dibaca.
+- Gunakan heading (## atau ###) untuk judul bagian jika perlu.
+- Gunakan numbered list (1. 2. 3.) untuk langkah-langkah atau poin berurutan.
+- Gunakan bullet points (- atau *) untuk daftar item.
+- Gunakan **bold** untuk istilah penting.
+- Jika ada tabel/nilai, tampilkan dalam format list yang rapi.
 
-Jika tidak ada di CONTEXT, katakan: "Tidak ditemukan informasi yang relevan di dokumen."`;
+ATURAN KONTEN:
+- Jawaban HANYA berdasarkan CONTEXT yang diberikan.
+- Jika tidak ada bukti di CONTEXT, tulis: "Tidak ditemukan informasi yang relevan di dokumen."
+- Jangan menyebut "chatbot", "prompt", "instruksi", "konteks", atau aturan internal.
+- WAJIB pakai sitasi [#N] di akhir setiap fakta/kalimat penting.
+- Bahasa Indonesia.
+
+CONTOH FORMAT JAWABAN YANG BAIK:
+### Pasal 10 - Penilaian Hasil Belajar
+
+1. Penilaian hasil belajar mahasiswa dilakukan secara berkala berbentuk ujian, pelaksanaan tugas, dan pengamatan oleh dosen. [#1]
+
+2. Ujian dapat diselenggarakan melalui:
+   - Ujian Tengah Semester (UTS)
+   - Ujian Akhir Semester (UAS)
+   - Ujian Akhir Program Studi [#1]
+
+3. Nilai huruf dan bobot:
+   - **A** = 4.00 (Istimewa)
+   - **A-** = 3.70 (Sangat Baik)
+   - **B+** = 3.30 (Baik Sekali)
+   - **B** = 3.00 (Baik) [#1]`;
 
     const userPrompt = `PERTANYAAN:\n${question}\n\nCONTEXT:\n${contextText}`;
 
-    async function ollamaChat(messagesArg, temperature = 0.2) {
-      const { body: chatBody, statusCode } = await request(`${OLLAMA_URL}/api/chat`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: CHAT_MODEL,
-          messages: messagesArg,
-          stream: false,
-          options: { temperature },
-        }),
-      });
-
-      if (statusCode < 200 || statusCode >= 300) {
-        const errText = await chatBody.text();
-        throw new Error(`Ollama chat failed: ${statusCode} ${errText}`);
-      }
-      return chatBody.json();
-    }
-
-    // --- attempt 1 (LLM-first)
     const baseMessages = [
       { role: "system", content: system },
       ...history.slice(-6).map((m) => ({ role: m.role, content: String(m.content || "") })),
@@ -780,30 +774,29 @@ Jika tidak ada di CONTEXT, katakan: "Tidak ditemukan informasi yang relevan di d
     let raw = "";
     let answer = "";
 
-    const chatJson1 = await ollamaChat(baseMessages, 0.2);
-    raw = chatJson1?.message?.content || "";
+    // attempt 1
+    const chat1 = await ollamaChat(baseMessages, 0.2);
+    raw = chat1?.message?.content || "";
     answer = finalizeAnswer(raw);
 
-    // --- quality gate
-    const needRetry1 = answer.length < 50 || (!hasCitations(answer) && !isNotFoundText(answer));
-
-    if (needRetry1) {
+    // retry kalau tidak ada sitasi (dan bukan “tidak ditemukan”)
+    if (!hasCitations(answer) && !isNotFoundText(answer)) {
       const repairMessages = [
         { role: "system", content: system },
         { role: "user", content: userPrompt },
         {
           role: "user",
-          content: 'PERBAIKI. Jawaban terlalu pendek atau kurang sitasi. Ulangi dengan jawaban lebih lengkap dan sertakan sitasi [#NOMOR].',
+          content:
+            "Ulangi jawaban dengan format narasi yang sama, tetapi PASTIKAN setiap fakta/kalimat penting diakhiri sitasi [#N] sesuai CONTEXT. Jangan menambah info di luar CONTEXT.",
         },
       ];
-
-      const chatJson2 = await ollamaChat(repairMessages, 0.1);
-      raw = chatJson2?.message?.content || raw;
+      const chat2 = await ollamaChat(repairMessages, 0.0);
+      raw = chat2?.message?.content || raw;
       answer = finalizeAnswer(raw);
     }
 
-    // --- final fallback
-    answer = ensureCitationsInText(answer);
+    // fallback: kalau masih bandel, tempelin [#1]
+    answer = ensureCitationsInText(answer, "[#1]");
 
     return reply.send({
       ok: true,
@@ -824,7 +817,8 @@ Jika tidak ada di CONTEXT, katakan: "Tidak ditemukan informasi yang relevan di d
 
 /**
  * POST /chat-multihop
- * Multi-hop RAG: decompose → 4x retrieval → merge → synthesize
+ * Body: { question: string, history?: [...] }
+ * Output: { ok, answer: string, sources: [...], debug: {...} }
  */
 app.post("/chat-multihop", async (req, reply) => {
   try {
@@ -833,14 +827,10 @@ app.post("/chat-multihop", async (req, reply) => {
     const history = Array.isArray(body.history) ? body.history : [];
 
     if (!question) return reply.code(400).send({ ok: false, message: "question is required" });
-
     if (!keywordCache.points.length) await loadKeywordCache();
 
-    // 1) DECOMPOSE question → 4 sub-questions
     const subQueries = await decomposeQuery(question);
-    console.log("Sub-queries:", subQueries);
 
-    // 2) RETRIEVE per sub-question (parallel)
     const [overviewChunks, detailChunks, aturanChunks, penutupChunks] = await Promise.all([
       hybridRetrieve(subQueries.overview, 4),
       hybridRetrieve(subQueries.detail, 4),
@@ -848,25 +838,22 @@ app.post("/chat-multihop", async (req, reply) => {
       hybridRetrieve(subQueries.penutup, 4),
     ]);
 
-    // 3) MERGE & DEDUP chunks
     const seenIds = new Set();
     const allChunks = [];
-
-    const addChunks = (chunks, hopName) => {
+    const add = (chunks, hop) => {
       for (const c of chunks) {
         if (!seenIds.has(c.id)) {
           seenIds.add(c.id);
-          allChunks.push({ ...c, hop: hopName });
+          allChunks.push({ ...c, hop });
         }
       }
     };
 
-    addChunks(overviewChunks, "overview");
-    addChunks(detailChunks, "detail");
-    addChunks(aturanChunks, "aturan");
-    addChunks(penutupChunks, "penutup");
+    add(overviewChunks, "overview");
+    add(detailChunks, "detail");
+    add(aturanChunks, "aturan");
+    add(penutupChunks, "penutup");
 
-    // Track which hops found evidence
     const hopsFound = {
       overview: overviewChunks.length > 0,
       detail: detailChunks.length > 0,
@@ -874,99 +861,91 @@ app.post("/chat-multihop", async (req, reply) => {
       penutup: penutupChunks.length > 0,
     };
 
-    if (allChunks.length === 0) {
+    if (!allChunks.length) {
       return reply.send({
         ok: true,
-        answer: {
-          overview: "Tidak ditemukan di dokumen.",
-          detail: "Tidak ditemukan di dokumen.",
-          aturan: "Tidak ditemukan di dokumen.",
-          penutup: "Tidak ditemukan di dokumen.",
-        },
+        answer: "Tidak ditemukan informasi yang relevan di dokumen.",
         sources: [],
         debug: { hopsFound, subQueries },
       });
     }
 
-    // 4) BUILD CONTEXT with hop labels
     const contextText = allChunks
       .map((c, idx) => `[#${idx + 1}] (${c.hop})\n${c.text}`)
       .join("\n\n---\n\n");
 
-    // 5) SYNTHESIS PROMPT
-    const system = `Kamu adalah asisten kampus Universitas Teknologi Nusantara (UTN).
+    const system = `Kamu adalah asisten kampus berbasis dokumen.
 
-ATURAN MUTLAK (STRICT):
-1. SCOPE KAMPUS SAJA: Kamu hanya boleh menjawab hal-hal yang berkaitan dengan Dokumen Kampus UTN.
-2. TOLAK TOKOH UMUM: Jika user bertanya tentang Presiden, Politik, Selebriti, atau Sejarah Umum yang TIDAK ADA di dokumen, JAWAB: "Maaf, topik ini di luar konteks dokumen kampus." (JANGAN GUNAKAN PENGETAHUAN LUAR).
-3. JAWABAN TUNGGAL: Buat satu narasi padu ringkas.
-4. JANGAN REPEAT: Jangan menulis ulang pertanyaan.
-5. SITASI WAJIB: Akhiri setiap fakta dengan [#NOMOR].
+ATURAN FORMAT JAWABAN:
+- Gunakan **Markdown** untuk format yang rapi dan mudah dibaca.
+- Gunakan heading (## atau ###) untuk judul bagian jika perlu.
+- Gunakan numbered list (1. 2. 3.) untuk langkah-langkah atau poin berurutan.
+- Gunakan bullet points (- atau *) untuk daftar item.
+- Gunakan **bold** untuk istilah penting.
+- Jika ada tabel/nilai, tampilkan dalam format list yang rapi.
 
-Jika tidak ada di CONTEXT, katakan: "Tidak ditemukan informasi yang relevan di dokumen."`;
+ATURAN KONTEN:
+- Jawaban HANYA berdasarkan CONTEXT yang diberikan.
+- Jika tidak ada bukti di CONTEXT, tulis: "Tidak ditemukan informasi yang relevan di dokumen."
+- Jangan menyebut "chatbot", "prompt", "instruksi", "konteks", atau aturan internal.
+- WAJIB pakai sitasi [#N] di akhir setiap fakta/kalimat penting.
+- Bahasa Indonesia.
 
-    const userPrompt = `PERTANYAAN:\n"${question}"\n\nCONTEXT:\n${contextText}\n\nINSTRUKSI: Jawab pertanyaan berdasarkan CONTEXT di atas. Jangan mengulang pertanyaan.`;
+CONTOH FORMAT JAWABAN YANG BAIK:
+### Pasal 10 - Penilaian Hasil Belajar
 
-    async function ollamaChat(messagesArg, temperature = 0.2) {
-      const { body: chatBody, statusCode } = await request(`${OLLAMA_URL}/api/chat`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({
-          model: CHAT_MODEL,
-          messages: messagesArg,
-          stream: false,
-          options: { temperature },
-        }),
-      });
+1. Penilaian hasil belajar mahasiswa dilakukan secara berkala. [#1]
 
-      if (statusCode < 200 || statusCode >= 300) {
-        const errText = await chatBody.text();
-        throw new Error(`Ollama chat failed: ${statusCode} ${errText}`);
-      }
+2. Ujian dapat diselenggarakan melalui:
+   - Ujian Tengah Semester (UTS)
+   - Ujian Akhir Semester (UAS) [#1]
 
-      return chatBody.json();
-    }
+3. Nilai huruf dan bobot:
+   - **A** = 4.00 (Istimewa)
+   - **B** = 3.00 (Baik) [#2]`;
 
-    // Call LLM
+    const userPrompt = `PERTANYAAN:\n${question}\n\nCONTEXT:\n${contextText}`;
+
     const baseMessages = [
       { role: "system", content: system },
       ...history.slice(-6).map((m) => ({ role: m.role, content: String(m.content || "") })),
       { role: "user", content: userPrompt },
     ];
 
-    const chatJson = await ollamaChat(baseMessages, 0.2);
-    let raw = chatJson?.message?.content || "";
-    let answer = finalizeAnswer(raw);
+    let raw = "";
+    let answer = "";
 
-    // Quality gate retry
-    const needRetry = answer.length < 50 || (!hasCitations(answer) && !isNotFoundText(answer));
+    const chat1 = await ollamaChat(baseMessages, 0.2);
+    raw = chat1?.message?.content || "";
+    answer = finalizeAnswer(raw);
 
-    if (needRetry) {
+    if (!hasCitations(answer) && !isNotFoundText(answer)) {
       const repairMessages = [
-        { role: "system", content: system + "\n\nCRITICAL: JAWABAN TERLALU PENDEK ATAU KURANG SITASI. ULANGI DENGAN LEBIH LENGKAP DAN SERTAKAN SITASI [#]." },
+        { role: "system", content: system },
         { role: "user", content: userPrompt },
+        {
+          role: "user",
+          content:
+            "Ulangi jawaban. PASTIKAN setiap fakta/kalimat penting diakhiri sitasi [#N] sesuai CONTEXT. Jangan menambah info di luar CONTEXT.",
+        },
       ];
-
-      const chatJson2 = await ollamaChat(repairMessages, 0.1);
-      raw = chatJson2?.message?.content || raw;
+      const chat2 = await ollamaChat(repairMessages, 0.0);
+      raw = chat2?.message?.content || raw;
       answer = finalizeAnswer(raw);
     }
 
-    // Force citations fallback
-    answer = ensureCitationsInText(answer);
+    answer = ensureCitationsInText(answer, "[#1]");
 
     return reply.send({
       ok: true,
-      answer, // String
+      answer,
       sources: allChunks.map((c, i) => ({
         ref: `#${i + 1}`,
-        id: c.source_file,
-        source_file: c.source_file, // Fix: Frontend expects source_file
-        chunk_index: c.chunk_index, // Fix: Frontend expects chunk_index
+        id: c.id,
+        source_file: c.source_file,
+        chunk_index: c.chunk_index,
         hop: c.hop,
-        text: c.text,
-        refId: i + 1,
-        fused_score: c.score || 0,
+        fused_score: c.score,
       })),
       debug: { hopsFound, subQueries },
     });
@@ -976,9 +955,16 @@ Jika tidak ada di CONTEXT, katakan: "Tidak ditemukan informasi yang relevan di d
   }
 });
 
+
 // =====================
 // START
 // =====================
 app.listen({ port: 3001, host: "0.0.0.0" }, () => {
-  console.log("Server running on http://localhost:3001");
+  console.log("========================================");
+  console.log("  Chatbot RAG API Server Started");
+  console.log("========================================");
+  console.log(`  WIN_HOST   : ${WIN_HOST}`);
+  console.log(`  OLLAMA     : ${OLLAMA_URL}`);
+  console.log(`  Server     : http://0.0.0.0:3001`);
+  console.log("========================================");
 });

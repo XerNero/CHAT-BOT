@@ -42,9 +42,9 @@
 
 | Komponen | Teknologi | Model | Fungsi |
 |----------|-----------|-------|--------|
-| **LLM** | Ollama | llama3.2:3b | Generasi jawaban |
-| **Embedding** | Ollama | nomic-embed-text | Konversi teks ke vektor |
-| **Dimensi Vektor** | - | 768 | Ukuran vektor embedding |
+| **LLM** | Ollama | llama3:8b | Generasi jawaban |
+| **Embedding** | Ollama | llama3:8b | Konversi teks ke vektor |
+| **Dimensi Vektor** | - | 4096 | Ukuran vektor embedding |
 
 ### 2.4 Database
 
@@ -141,12 +141,14 @@ PDF Upload
     │
     ▼
 ┌─────────────────┐
-│ Chunking        │ ◄── ~500 karakter per chunk
+│ Smart Chunking  │ ◄── ~800 karakter per chunk
+│ (Paragraph/     │     dengan overlap 150
+│  Sentence-aware)│     menghormati heading (BAB, Pasal)
 └─────────────────┘
     │
     ▼
 ┌─────────────────┐
-│ Embedding       │ ◄── nomic-embed-text
+│ Embedding       │ ◄── llama3:8b
 └─────────────────┘
     │
     ▼
@@ -172,11 +174,15 @@ PDF Upload
 ### 6.1 System Prompt Ketat
 
 ```
-ATURAN MUTLAK (STRICT):
-1. SCOPE KAMPUS SAJA - Hanya jawab dari dokumen kampus UTN
-2. TOLAK TOKOH UMUM - Jangan gunakan pengetahuan luar
-3. JAWABAN TUNGGAL - Buat satu narasi padu
-4. SITASI WAJIB - Setiap fakta harus ada [#N]
+ATURAN FORMAT JAWABAN:
+- Gunakan Markdown untuk format rapi
+- Gunakan heading, numbered list, bullet points
+- Gunakan **bold** untuk istilah penting
+
+ATURAN KONTEN:
+- Jawaban HANYA berdasarkan CONTEXT
+- WAJIB pakai sitasi [#N] di akhir setiap fakta
+- Fallback: "Tidak ditemukan informasi..." jika tidak ada
 ```
 
 ### 6.2 Guardrail Checklist
@@ -248,4 +254,4 @@ ATURAN MUTLAK (STRICT):
 ---
 
 *Dokumen ini dibuat untuk keperluan presentasi skripsi*  
-*Terakhir diperbarui: 4 Januari 2026*
+*Terakhir diperbarui: 12 Januari 2026*

@@ -66,7 +66,7 @@ flowchart LR
 ```mermaid
 flowchart TD
     A[📄 Upload PDF] --> B[Ekstraksi Teks]
-    B --> C[Chunking ~500 karakter]
+    B --> C[Smart Chunking ~800 karakter]
     C --> D[Embedding via Ollama]
     D --> E[Simpan ke Qdrant]
     E --> F[✅ PDF Siap Digunakan]
@@ -75,7 +75,7 @@ flowchart TD
         M1[source_file]
         M2[chunk_index]
         M3[text]
-        M4[vector 768d]
+        M4[vector 4096d]
     end
     
     E --> Metadata
@@ -209,4 +209,4 @@ sequenceDiagram
 ---
 
 *Dokumen ini dibuat untuk keperluan presentasi skripsi*  
-*Terakhir diperbarui: 4 Januari 2026*
+*Terakhir diperbarui: 12 Januari 2026*

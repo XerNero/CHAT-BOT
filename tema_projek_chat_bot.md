@@ -25,8 +25,8 @@ Chatbot berbasis **Retrieval-Augmented Generation (RAG)** yang dirancang untuk m
 | **Frontend** | Next.js (React) | UI Chat modern |
 | **Backend** | Node.js (Fastify) | API server |
 | **Vector DB** | Qdrant | Penyimpanan embedding |
-| **LLM** | Ollama (Llama 3.2) | Generasi jawaban |
-| **Embedding** | nomic-embed-text | Konversi teks ke vektor |
+| **LLM** | Ollama (llama3:8b) | Generasi jawaban |
+| **Embedding** | Ollama (llama3:8b) | Konversi teks ke vektor |
 
 ### 2.2 Alur Kerja RAG
 
@@ -240,4 +240,4 @@ start.bat  # Windows
 
 ---
 
-*Dokumen ini terakhir diperbarui: 3 Januari 2026*
+*Dokumen ini terakhir diperbarui: 12 Januari 2026*
