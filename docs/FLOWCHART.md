@@ -3,6 +3,32 @@
 
 ---
 
+## 0. Flowchart Sistem Lengkap (End-to-End)
+
+**Diagram ini menunjukkan alur lengkap sistem dari pertanyaan user hingga jawaban ditampilkan.**
+
+![Flowchart Sistem Lengkap](./gambar_flowchart/00_flowchart_sistem_lengkap.png)
+
+### Penjelasan Alur:
+
+| No | Tahap | Komponen | Proses |
+|----|-------|----------|--------|
+| 1 | START | User | Ketik pertanyaan di browser |
+| 2 | Frontend | Next.js | Terima input, kirim ke Backend API |
+| 3 | Backend | Fastify | Terima request di `/chat-multihop` |
+| 4 | Query Decomposition | Ollama LLM | Pecah jadi 4 sub-query (Overview, Detail, Aturan, Penutup) |
+| 5 | Hybrid Retrieval | Vector + BM25 | Jalankan 4x parallel, lalu RRF Fusion |
+| 6 | Merge & Dedup | Backend | Gabung semua chunk, hapus duplikat |
+| 7 | Anti-Hallucination | Backend | Cek ada chunk relevan? Jika tidak, tolak |
+| 8 | Context Building | Backend | Format chunk dengan sitasi [#N] |
+| 9 | LLM Synthesis | Ollama LLM | Generate jawaban berdasarkan context |
+| 10 | Post-Processing | Backend | Format Markdown (list, heading, bold) |
+| 11 | Response | Backend | Return JSON dengan answer + sources |
+| 12 | Render | Frontend | Render Markdown + sitasi |
+| 13 | END | User | Lihat jawaban terformat |
+
+---
+
 ## 1. Flowchart Utama - Alur Chat
 
 ```mermaid

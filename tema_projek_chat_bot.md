@@ -20,13 +20,13 @@ Chatbot berbasis **Retrieval-Augmented Generation (RAG)** yang dirancang untuk m
 
 ### 2.1 Stack Teknologi
 
-| Komponen | Teknologi | Fungsi |
-|----------|-----------|--------|
-| **Frontend** | Next.js (React) | UI Chat modern |
-| **Backend** | Node.js (Fastify) | API server |
-| **Vector DB** | Qdrant | Penyimpanan embedding |
-| **LLM** | Ollama (llama3:8b) | Generasi jawaban |
-| **Embedding** | Ollama (llama3:8b) | Konversi teks ke vektor |
+| Komponen     | Teknologi           | Fungsi                  |
+|--------------|---------------------|-------------------------|
+| **Frontend** | Next.js (React)     | UI Chat modern          |
+| **Backend**  | Node.js (Fastify)   | API server              |
+| **Vector DB**| Qdrant              | Penyimpanan embedding   |
+| **LLM**      | Ollama (llama3:8b)  | Generasi jawaban        |
+| **Embedding**| Ollama (llama3:8b)  | Konversi teks ke vektor |
 
 ### 2.2 Alur Kerja RAG
 
@@ -100,10 +100,10 @@ Pertanyaan User
 
 ### 4.1 Dual Search Strategy
 
-| Metode | Deskripsi | Kelebihan |
-|--------|-----------|-----------|
-| **BM25 (Lexical)** | Pencarian kata kunci | Akurat untuk istilah teknis |
-| **Vector Search** | Pencarian semantik | Memahami sinonim & konteks |
+| Metode             | Deskripsi                   | Kelebihan                   |
+|--------------------|-----------------------------|-----------------------------|
+| **BM25 (Lexical)** | Pencarian kata kunci        | Akurat untuk istilah teknis |
+| **Vector Search**  | Pencarian semantik          | Memahami sinonim & konteks  |
 
 ### 4.2 Rank Fusion (RRF)
 
@@ -130,24 +130,24 @@ Jika tidak ada di CONTEXT: "Tidak ditemukan informasi yang relevan."
 
 ### 5.2 Guardrail Checklist
 
-| Aturan | Implementasi |
-|--------|--------------|
-| ✅ Hanya dari dokumen | LLM hanya menerima CONTEXT dari retrieval |
-| ✅ Tolak pertanyaan luar | System prompt melarang pengetahuan umum |
-| ✅ Sitasi wajib | Setiap klaim harus ada referensi [#N] |
-| ✅ Fallback response | Jika tidak ada info: tolak dengan sopan |
+| Aturan                           | Implementasi                                      |
+|----------------------------------|---------------------------------------------------|
+| ✅ Hanya dari dokumen           | LLM hanya menerima CONTEXT dari retrieval          |
+| ✅ Tolak pertanyaan luar        | System prompt melarang pengetahuan umum            |
+| ✅ Sitasi wajib                 | Setiap klaim harus ada referensi [#N]              |
+| ✅ Fallback response            | Jika tidak ada info: tolak dengan sopan            |
 
 ---
 
 ## 6. API Endpoints
 
-| Endpoint | Method | Fungsi |
-|----------|--------|--------|
-| `/chat` | POST | Single-hop RAG |
-| `/chat-multihop` | POST | Multi-hop RAG |
-| `/ingest` | POST | Upload & proses PDF |
-| `/docs` | GET | Daftar dokumen |
-| `/health` | GET | Status sistem |
+| Endpoint         | Method    | Fungsi              |
+|------------------|-----------|---------------------|
+| `/chat`          | POST      | Single-hop RAG      |
+| `/chat-multihop` | POST      | Multi-hop RAG       |
+| `/ingest`        | POST      | Upload & proses PDF |
+| `/docs`          | GET       | Daftar dokumen      |
+| `/health`        | GET       | Status sistem       |
 
 ### Response Format
 
@@ -214,11 +214,11 @@ start.bat  # Windows
 
 ### Test 20 Pertanyaan Random
 
-| Kategori | Jumlah | Hasil |
-|----------|--------|-------|
-| Topik Kampus (Info Ada) | 10 | ✅ 100% Dijawab |
-| Topik Kampus (Info Tidak Ada) | 2 | ✅ 100% Ditolak |
-| Topik Luar (Halusinasi Test) | 8 | ✅ 100% Ditolak |
+| Kategori                        | Jumlah | Hasil           |
+|---------------------------------|--------|-----------------|
+| Topik Kampus (Info Ada)         | 10     | ✅ 100% Dijawab |
+| Topik Kampus (Info Tidak Ada)   | 2      | ✅ 100% Ditolak |
+| Topik Luar (Halusinasi Test)    | 8      | ✅ 100% Ditolak |
 
 **Total: 20/20 SUKSES (100%)**
 
@@ -226,14 +226,14 @@ start.bat  # Windows
 
 ## 10. Status Implementasi
 
-| Fitur | Status |
-|-------|--------|
-| Frontend Next.js | ✅ Selesai |
-| Backend Fastify | ✅ Selesai |
-| Hybrid Retrieval | ✅ Selesai |
-| Multi-hop RAG | ✅ Selesai |
-| Anti-Halusinasi | ✅ Selesai |
-| Sitasi Sumber | ✅ Selesai |
+| Fitur                  | Status      |
+|------------------------|-------------|
+| Frontend Next.js       | ✅ Selesai |
+| Backend Fastify        | ✅ Selesai |
+| Hybrid Retrieval       | ✅ Selesai |
+| Multi-hop RAG          | ✅ Selesai |
+| Anti-Halusinasi        | ✅ Selesai |
+| Sitasi Sumber          | ✅ Selesai |
 | Format Jawaban Tunggal | ✅ Selesai |
 
 **🚀 PROYEK SIAP PRODUKSI**
