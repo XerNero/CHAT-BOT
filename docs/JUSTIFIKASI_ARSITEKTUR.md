@@ -5,14 +5,14 @@
 
 ## 📌 Ringkasan Keputusan Arsitektur
 
-| Komponen | Pilihan | Alternatif yang Dipertimbangkan |
-|----------|---------|--------------------------------|
-| **Metode RAG** | Hybrid RAG | Vector RAG, Graph RAG, Agentic RAG |
-| **Pendekatan** | Zero-shot + Multi-hop | Fine-tuning, Single-hop |
-| **LLM** | Ollama (Llama 3 8B) | OpenAI API, Claude, Fine-tuned model |
-| **Vector DB** | Qdrant | Chroma, Pinecone, pgvector |
-| **Backend** | Fastify (Node.js) | Express, FastAPI (Python) |
-| **Frontend** | Next.js (React) | Vue, Svelte, HTML+JS |
+| Komponen       | Pilihan               | Alternatif yang Dipertimbangkan      |
+|----------      |---------------------- |------------------------------------  | 
+| **Metode RAG** | Hybrid RAG            | Vector RAG, Graph RAG, Agentic RAG   |
+| **Pendekatan** | Zero-shot + Multi-hop | Fine-tuning, Single-hop              |
+| **LLM**        | Ollama (Llama 3 8B)   | OpenAI API, Claude, Fine-tuned model |
+| **Vector DB**  | Qdrant                | Chroma, Pinecone, pgvector           |
+| **Backend**    | Fastify (Node.js)     | Express, FastAPI (Python)            |
+| **Frontend**   | Next.js (React)       | Vue, Svelte, HTML+JS                 |
 
 ---
 
@@ -20,10 +20,10 @@
 
 ### A. Vector RAG vs Hybrid RAG vs Graph RAG
 
-| Aspek | Vector RAG | Hybrid RAG ✅ | Graph RAG |
-|-------|------------|---------------|-----------|
+| Aspek          | Vector RAG | Hybrid RAG  ✅ | Graph RAG |
+|----------------|------------|---------------|-----------|
 | **Kompleksitas** | Rendah | Sedang | Tinggi |
-| **Akurasi** | 70-85% | 85-95% | 90-97% |
+| **Akurasi**    | 70-85% | 85-95% | 90-97% |
 | **Waktu Implementasi** | 1-2 minggu | 2-3 minggu | 1-2 bulan |
 | **Cocok untuk Bahasa Indonesia** | Cukup | Sangat Baik | Baik |
 | **Handling Istilah Teknis** | Lemah | Kuat | Kuat |

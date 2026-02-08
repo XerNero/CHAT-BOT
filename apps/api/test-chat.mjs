@@ -17,7 +17,7 @@ async function callChat(question, history = []) {
 
 async function run() {
     const questions = [
-        "Apa saja layanan akademik yang tersedia di kampus?",
+        "Apa saja layanan akademik yang tersedia di kampus?",                                                               
         "Apa peraturan kampus terkait sanksi pelanggaran?",
         "Bagaimana prosedur umum pengajuan layanan akademik dan batas waktunya?",
     ];
